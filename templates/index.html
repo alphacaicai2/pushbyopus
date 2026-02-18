@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="zh-CN" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Miniflux → Discord 推送系统</title>
+  <meta name="description" content="Miniflux RSS 到 Discord 推送系统配置中心">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: "#f2f7ff",
+              100: "#e2ecff",
+              500: "#2f6fed",
+              600: "#2563eb",
+              700: "#1e4ba8",
+              900: "#14284f"
+            }
+          },
+          boxShadow: {
+            card: "0 20px 55px -34px rgba(20, 40, 79, 0.35)"
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="min-h-full bg-slate-50 text-slate-900 antialiased">
+  <main class="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <header class="mb-6">
+      <h1 class="text-2xl font-semibold tracking-tight text-brand-900 sm:text-3xl">
+        Miniflux → Discord 推送系统
+      </h1>
+      <p class="mt-2 text-sm text-slate-600">
+        配置 Miniflux 轮询、分组映射、日报策略与推送日志查看。
+      </p>
+    </header>
+
+    {% if message %}
+    <div class="mb-6 rounded-xl border {% if message_type == 'success' %}border-green-200 bg-green-50 text-green-800{% else %}border-red-200 bg-red-50 text-red-800{% endif %} p-4">
+      {{ message }}
+    </div>
+    {% endif %}
+
+    <!-- 系统状态卡片 -->
+    <section class="surface-card mb-6">
+      <div class="mb-4 flex items-center justify-between">
+        <h2 class="section-title">系统状态</h2>
+        <span class="text-xs font-medium uppercase tracking-wider text-slate-500">Runtime</span>
+      </div>
+      <div class="grid gap-4 md:grid-cols-2">
+        <article class="rounded-xl border border-slate-200 bg-white p-4">
+          <p class="field-label">上次轮询时间</p>
+          <p class="mt-1 font-mono text-sm text-slate-900">
+            {{ status.last_poll_at | default("未执行", true) }}
+          </p>
+        </article>
+        <article class="rounded-xl border border-slate-200 bg-white p-4">
+          <p class="field-label">运行状态</p>
+          <div class="mt-2">
+            <span class="status-pill {% if status and status.running %}status-pill--ok{% else %}status-pill--idle{% endif %}">
+              {{ "运行中" if status and status.running else "已停止" }}
+            </span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- 区块A: Miniflux 连接配置 -->
+    <form method="post" action="/api/config/save" class="space-y-6">
+      <section class="surface-card">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 class="section-title">Miniflux 连接配置</h2>
+          <a href="/api/poll/now" class="secondary-btn inline-flex items-center">
+            手动推送一次
+          </a>
+        </div>
+        <div class="mt-4 grid gap-4 lg:grid-cols-2">
+          <div>
+            <label class="field-label" for="miniflux_url">Miniflux URL</label>
+            <input
+              id="miniflux_url"
+              name="miniflux_url"
+              type="url"
+              class="form-control"
+              placeholder="https://miniflux.vibexcap.com"
+              value="{{ poll_setting.miniflux_url | default('', true) }}"
+              required
+            >
+          </div>
+          <div>
+            <label class="field-label" for="miniflux_token">Miniflux Token</label>
+            <div class="flex gap-2">
+              <input
+                id="miniflux_token"
+                name="miniflux_token"
+                type="password"
+                class="form-control flex-1 font-mono"
+                placeholder="输入 API Token"
+                value="{{ poll_setting.miniflux_token | default('', true) }}"
+                data-token-input
+                autocomplete="off"
+              >
+              <button type="button" class="secondary-btn px-4" data-token-toggle>显示</button>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4">
+          <div>
+            <label class="field-label" for="interval_minutes">轮询间隔</label>
+            <select id="interval_minutes" name="interval_minutes" class="form-control">
+              {% set selected_interval = poll_setting.interval_minutes | default(15) %}
+              {% for interval in [10, 12, 15, 30, 60] %}
+              <option value="{{ interval }}" {% if selected_interval == interval %}selected{% endif %}>
+                {{ interval }} 分钟
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="mt-4">
+          <div>
+            <label class="field-label" for="display_timezone">显示时区</label>
+            <select id="display_timezone" name="display_timezone" class="form-control">
+              {% set selected_tz = poll_setting.display_timezone | default("Asia/Shanghai") %}
+              {% for tz in ["Asia/Shanghai", "Asia/Tokyo", "America/New_York", "America/Los_Angeles", "Europe/London", "UTC"] %}
+              <option value="{{ tz }}" {% if selected_tz == tz %}selected{% endif %}>
+                {{ tz }}
+              </option>
+              {% endfor %}
+            </select>
+            <p class="mt-1 text-xs text-slate-500">用于 Discord 消息和推送日志的时间显示</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 区块B: 分类映射列表 -->
+      <section class="surface-card">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 class="section-title">分类映射列表</h2>
+          <a href="/api/sync-categories" class="secondary-btn inline-flex items-center">
+            刷新分类列表
+          </a>
+        </div>
+        <div class="table-wrapper">
+          <table class="table-base">
+            <thead>
+              <tr>
+                <th scope="col">分组名称</th>
+                <th scope="col">Webhook URL</th>
+                <th scope="col" class="w-20 text-center">实时</th>
+                <th scope="col" class="w-20 text-center">日报</th>
+                <th scope="col" class="w-28 text-center">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if bindings %}
+                {% for item in bindings %}
+              <tr>
+                <td>
+                  <input type="hidden" name="bindings-{{ item.category_id }}-category_id" value="{{ item.category_id }}">
+                  <span class="font-medium text-slate-900">{{ item.category_name }}</span>
+                </td>
+                <td>
+                  <input
+                    type="url"
+                    name="bindings-{{ item.category_id }}-webhook_url"
+                    class="form-control h-10"
+                    placeholder="https://discord.com/api/webhooks/..."
+                    value="{{ item.webhook_url | default('', true) }}"
+                  >
+                </td>
+                <td class="text-center">
+                  <input
+                    type="checkbox"
+                    name="bindings-{{ item.category_id }}-realtime_enabled"
+                    class="checkbox-input"
+                    {% if item.realtime_enabled %}checked{% endif %}
+                  >
+                </td>
+                <td class="text-center">
+                  <input
+                    type="checkbox"
+                    name="bindings-{{ item.category_id }}-digest_enabled"
+                    class="checkbox-input"
+                    {% if item.digest_enabled %}checked{% endif %}
+                  >
+                </td>
+                <td class="text-center">
+                  <a href="/api/test-push/{{ item.category_id }}" class="secondary-btn inline-flex h-9 items-center px-3 text-xs">
+                    测试推送
+                  </a>
+                </td>
+              </tr>
+                {% endfor %}
+              {% else %}
+              <tr>
+                <td colspan="5" class="py-8 text-center text-sm text-slate-500">
+                  暂无分组配置，点击"刷新分类列表"后开始绑定。
+                </td>
+              </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 区块C: 推送控制（日报配置） -->
+      <section class="surface-card">
+        <h2 class="section-title">推送控制（日报配置）</h2>
+        {% set digest_time = digest_setting.digest_time | default("08:00", true) %}
+        {% set period_hours = digest_setting.period_hours | default(24) %}
+        {% set summary_length = digest_setting.summary_length | default("medium", true) %}
+        {% set language_mode = digest_setting.language_mode | default("chinese", true) %}
+        <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <label class="field-label" for="digest_time">发送时间</label>
+            <input id="digest_time" name="digest_time" type="time" class="form-control" value="{{ digest_time }}">
+          </div>
+          <div>
+            <label class="field-label" for="period_hours">周期</label>
+            <select id="period_hours" name="period_hours" class="form-control">
+              <option value="12" {% if period_hours == 12 %}selected{% endif %}>12 小时</option>
+              <option value="24" {% if period_hours == 24 %}selected{% endif %}>24 小时</option>
+              <option value="48" {% if period_hours == 48 %}selected{% endif %}>48 小时</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label" for="summary_length">摘要长度</label>
+            <select id="summary_length" name="summary_length" class="form-control">
+              <option value="short" {% if summary_length == "short" %}selected{% endif %}>短</option>
+              <option value="medium" {% if summary_length == "medium" %}selected{% endif %}>中</option>
+              <option value="long" {% if summary_length == "long" %}selected{% endif %}>长</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label" for="language_mode">语言模式</label>
+            <select id="language_mode" name="language_mode" class="form-control">
+              <option value="chinese" {% if language_mode == "chinese" %}selected{% endif %}>中文</option>
+              <option value="english" {% if language_mode == "english" %}selected{% endif %}>英文</option>
+              <option value="title_only" {% if language_mode == "title_only" %}selected{% endif %}>仅翻译标题</option>
+              <option value="original" {% if language_mode == "original" %}selected{% endif %}>保留原文</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <!-- 保存按钮 -->
+      <section class="flex flex-wrap items-center justify-between gap-3">
+        <p class="text-sm text-slate-500">配置保存后将自动更新轮询器与日报任务。</p>
+        <button type="submit" class="action-btn">
+          保存所有配置
+        </button>
+      </section>
+    </form>
+
+    <!-- 推送日志表格 -->
+    <section class="surface-card mt-6">
+      <h2 class="section-title">推送日志（最近 10 条）</h2>
+      <div class="mt-4 table-wrapper">
+        <table class="table-base">
+          <thead>
+            <tr>
+              <th scope="col" class="w-40">时间</th>
+              <th scope="col" class="w-48">分组</th>
+              <th scope="col">标题</th>
+              <th scope="col" class="w-24">状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% if logs %}
+              {% for log in logs[:10] %}
+            <tr>
+              <td class="font-mono text-xs text-slate-500">{{ log.pushed_at }}</td>
+              <td>{{ log.category_name }}</td>
+              <td class="max-w-xl truncate" title="{{ log.title }}">{{ log.title }}</td>
+              <td>
+                <span class="log-badge {% if log.status == 'success' %}log-badge--success{% else %}log-badge--failed{% endif %}">
+                  {{ "成功" if log.status == "success" else "失败" }}
+                </span>
+              </td>
+            </tr>
+              {% endfor %}
+            {% else %}
+            <tr>
+              <td colspan="4" class="py-8 text-center text-sm text-slate-500">暂无日志记录。</td>
+            </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function() {
+      var input = document.querySelector('[data-token-input]');
+      var button = document.querySelector('[data-token-toggle]');
+      if (!input || !button) return;
+      button.addEventListener('click', function() {
+        var isMasked = input.type === 'password';
+        input.type = isMasked ? 'text' : 'password';
+        button.textContent = isMasked ? '隐藏' : '显示';
+      });
+    })();
+  </script>
+</body>
+</html>
