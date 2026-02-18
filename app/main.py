@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import init_db, get_db
 from app.models import CategoryBinding, DigestSetting, PollSetting, DeliveryLog
 from app.routers.config import router as config_router
+from app.routers.webhook import router as webhook_router
 from app.scheduler import scheduler
 
 
@@ -103,6 +104,7 @@ templates = Jinja2Templates(directory="templates")
 
 # Include API routers
 app.include_router(config_router)
+app.include_router(webhook_router)
 
 
 @app.get("/", response_class=HTMLResponse, summary="Configuration UI")

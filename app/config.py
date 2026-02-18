@@ -44,6 +44,10 @@ class Settings(BaseSettings):
         le=1440,
         description="Polling interval in minutes (1-1440)",
     )
+    miniflux_webhook_secret: str = Field(
+        default="",
+        description="Secret used to verify Miniflux webhook signature",
+    )
 
     # LLM Configuration
     llm_provider: Literal["openai", "anthropic"] = Field(

@@ -160,6 +160,30 @@ class MinifluxClient:
 
         return categories
 
+    async def get_feed(self, feed_id: int) -> dict[str, Any]:
+        """获取单个 Feed 详情。
+
+        Args:
+            feed_id: Feed ID。
+
+        Returns:
+            Feed 详情字典（包含 category/category_id 等字段）。
+
+        Raises:
+            ValueError: 参数校验失败。
+            MinifluxNetworkError: 网络请求失败。
+            MinifluxAPIError: API 返回错误或响应格式异常。
+        """
+        self._validate_positive_int("feed_id", feed_id)
+
+        payload = await self._request_json("GET", f"/v1/feeds/{feed_id}")
+        if not isinstance(payload, dict):
+            raise MinifluxAPIError(
+                status_code=502,
+                message=f"Feed 响应格式错误：期望字典，收到 {type(payload).__name__}",
+            )
+        return payload
+
     async def get_entries(
         self,
         category_id: int | None = None,
