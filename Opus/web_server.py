@@ -1,16 +1,20 @@
 """
 Opus Relay - Web 配置管理 API
 
-基于 FastAPI 提供 REST API，用于：
+基于 FastAPI 提供 REST API + WebSocket，用于：
 - 读取和保存 config.json
 - 测试 Miniflux / 翻译 / Discord 连接
 - 获取 Feed 分组列表
+- WebSocket 实时日志推送
+- 配置热重载（通知 scheduler 更新）
 """
 
 import json
 import os
 import logging
-from fastapi import FastAPI, HTTPException
+import asyncio
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -24,6 +28,120 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 STATIC_DIR = os.path.join(CONFIG_DIR, "static")
 
 app = FastAPI(title="Opus Relay 配置管理", version="1.0")
+
+
+# ========== WebSocket 日志广播 ==========
+
+class WebSocketLogManager:
+    """管理 WebSocket 连接和日志广播"""
+
+    def __init__(self):
+        self.connections: list[WebSocket] = []
+        self._log_buffer: list[dict] = []   # 最近日志缓冲（供新连接回看）
+        self._buffer_max = 200
+
+    async def connect(self, ws: WebSocket):
+        """接受新连接并发送缓冲日志"""
+        await ws.accept()
+        self.connections.append(ws)
+        # 发送缓冲日志，让新连接能看到历史
+        for log in self._log_buffer:
+            try:
+                await ws.send_json(log)
+            except Exception:
+                break
+
+    def disconnect(self, ws: WebSocket):
+        """移除断开的连接"""
+        if ws in self.connections:
+            self.connections.remove(ws)
+
+    async def broadcast(self, log_entry: dict):
+        """向所有连接广播日志"""
+        self._log_buffer.append(log_entry)
+        if len(self._log_buffer) > self._buffer_max:
+            self._log_buffer = self._log_buffer[-self._buffer_max:]
+
+        disconnected = []
+        for ws in self.connections:
+            try:
+                await ws.send_json(log_entry)
+            except Exception:
+                disconnected.append(ws)
+
+        for ws in disconnected:
+            self.disconnect(ws)
+
+
+# 全局日志管理器
+log_manager = WebSocketLogManager()
+
+
+class WebSocketLogHandler(logging.Handler):
+    """将 Python 日志转发到 WebSocket"""
+
+    def __init__(self, manager: WebSocketLogManager):
+        super().__init__()
+        self.manager = manager
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop):
+        """设置事件循环引用"""
+        self._loop = loop
+
+    def emit(self, record: logging.LogRecord):
+        if self._loop is None or self._loop.is_closed():
+            return
+
+        log_entry = {
+            "timestamp": datetime.fromtimestamp(record.created).strftime("%H:%M:%S"),
+            "level": record.levelname,
+            "name": record.name,
+            "message": record.getMessage(),
+        }
+
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.manager.broadcast(log_entry),
+                self._loop,
+            )
+        except Exception:
+            pass  # 忽略广播失败
+
+
+# 全局日志处理器
+ws_handler = WebSocketLogHandler(log_manager)
+ws_handler.setLevel(logging.INFO)
+
+
+# ========== Scheduler 引用（供热重载使用） ==========
+
+_scheduler = None  # 运行时由 main.py 注入
+
+
+def set_scheduler(scheduler):
+    """设置 scheduler 引用，用于热重载"""
+    global _scheduler
+    _scheduler = scheduler
+
+
+# ========== 生命周期 ==========
+
+@app.on_event("startup")
+async def on_startup():
+    """FastAPI 启动时：挂载 WebSocket 日志处理器"""
+    loop = asyncio.get_event_loop()
+    ws_handler.set_loop(loop)
+
+    # 挂载到根 logger，捕获所有 opus.* 日志
+    root_logger = logging.getLogger("opus")
+    root_logger.addHandler(ws_handler)
+
+    # 也捕获 httpx 日志（API 请求）
+    httpx_logger = logging.getLogger("httpx")
+    httpx_logger.addHandler(ws_handler)
+
+    logger.info("WebSocket 日志广播已启动")
 
 
 # ========== 数据模型 ==========
@@ -59,6 +177,20 @@ class TestWebhookRequest(BaseModel):
     webhook_url: str
 
 
+# ========== WebSocket 端点 ==========
+
+@app.websocket("/ws/logs")
+async def websocket_logs(ws: WebSocket):
+    """实时日志 WebSocket 端点"""
+    await log_manager.connect(ws)
+    try:
+        while True:
+            # 保持连接，接收客户端心跳
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        log_manager.disconnect(ws)
+
+
 # ========== 配置读写 API ==========
 
 @app.get("/api/config")
@@ -75,13 +207,34 @@ async def get_config():
 
 @app.post("/api/config")
 async def save_config(config: AppConfig):
-    """保存配置到 config.json"""
+    """保存配置到 config.json 并热重载"""
     try:
+        config_dict = config.model_dump()
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(config.model_dump(), f, indent=2, ensure_ascii=False)
-        return {"success": True, "message": "配置已保存"}
+            json.dump(config_dict, f, indent=2, ensure_ascii=False)
+
+        # 热重载：通知 scheduler 更新配置
+        if _scheduler is not None:
+            try:
+                _scheduler.reload(config_dict)
+                return {"success": True, "message": "配置已保存并热重载生效 ✅"}
+            except Exception as e:
+                logger.error(f"热重载失败: {e}")
+                return {"success": True, "message": f"配置已保存，但热重载失败: {e}（需手动重启）"}
+        else:
+            return {"success": True, "message": "配置已保存（轮询服务未运行，重启后生效）"}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"保存配置失败: {e}")
+
+
+@app.get("/api/status")
+async def get_status():
+    """获取服务状态"""
+    return {
+        "scheduler_running": _scheduler is not None,
+        "connections": len(log_manager.connections),
+    }
 
 
 # ========== 测试连接 API ==========
@@ -172,7 +325,6 @@ async def test_webhook(req: TestWebhookRequest):
 @app.get("/api/feeds")
 async def get_feeds():
     """获取 Miniflux 的 Feed 分组列表"""
-    # 先读取当前配置获取 Miniflux 凭证
     if not os.path.exists(CONFIG_PATH):
         raise HTTPException(status_code=400, detail="请先配置 Miniflux 连接信息")
 
@@ -212,7 +364,6 @@ async def get_feeds():
                     "title": feed.get("title", "无标题"),
                 })
 
-            # 按分组名称排序
             result = sorted(categories.values(), key=lambda c: c["name"])
             return {"categories": result, "total_feeds": len(feeds)}
 
@@ -222,7 +373,6 @@ async def get_feeds():
 
 # ========== 静态文件 & 首页 ==========
 
-# 挂载静态文件目录
 os.makedirs(STATIC_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

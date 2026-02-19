@@ -351,6 +351,54 @@
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
+
+        /* 日志面板 */
+        .log-panel {
+            background: #0a0e14;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            height: 300px;
+            overflow-y: auto;
+            font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+            font-size: 12px;
+            line-height: 1.7;
+            padding: 12px 16px;
+        }
+
+        .log-panel::-webkit-scrollbar { width: 6px; }
+        .log-panel::-webkit-scrollbar-track { background: transparent; }
+        .log-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .log-line { white-space: pre-wrap; word-break: break-all; }
+        .log-time { color: var(--text-muted); }
+        .log-name { color: var(--accent); }
+        .log-msg { color: var(--text-secondary); }
+        .log-level-INFO .log-msg { color: var(--text-primary); }
+        .log-level-WARNING .log-msg { color: var(--warning); }
+        .log-level-ERROR .log-msg { color: var(--error); }
+
+        .log-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .ws-status {
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .ws-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--error);
+        }
+
+        .ws-dot.connected { background: var(--success); }
     </style>
 </head>
 <body>
@@ -465,6 +513,24 @@
                             点击"加载分组"从 Miniflux 获取分组列表
                         </p>
                     </div>
+                </div>
+            </div>
+
+            <!-- 实时日志 -->
+            <div class="card" id="card-logs">
+                <div class="card-header" onclick="toggleCard('card-logs')">
+                    <div class="card-title"><span class="icon">📝</span> 实时日志</div>
+                    <span class="card-toggle">▼</span>
+                </div>
+                <div class="card-body">
+                    <div class="log-header">
+                        <div class="ws-status">
+                            <div class="ws-dot" id="ws-dot"></div>
+                            <span id="ws-status-text" style="color: var(--text-muted)">连接中...</span>
+                        </div>
+                        <button class="btn btn-secondary btn-sm" onclick="clearLogs()">🗑️ 清空</button>
+                    </div>
+                    <div class="log-panel" id="log-panel"></div>
                 </div>
             </div>
         </div>
@@ -584,8 +650,8 @@
                     routes: currentRoutes,
                 };
 
-                await api('POST', '/api/config', config);
-                showToast('✅ 配置已保存！重启服务后生效');
+                const result = await api('POST', '/api/config', config);
+                showToast(result.message || '✅ 配置已保存！', result.success ? 'success' : 'error');
             } catch (e) {
                 showToast('保存失败: ' + e.message, 'error');
             } finally {
@@ -717,8 +783,67 @@
             }
         }
 
+        // ========== WebSocket 实时日志 ==========
+        let ws = null;
+        let wsRetryTimer = null;
+
+        function connectWebSocket() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${location.host}/ws/logs`);
+
+            ws.onopen = () => {
+                document.getElementById('ws-dot').classList.add('connected');
+                document.getElementById('ws-status-text').textContent = '已连接';
+                document.getElementById('ws-status-text').style.color = 'var(--success)';
+            };
+
+            ws.onmessage = (event) => {
+                const log = JSON.parse(event.data);
+                appendLog(log);
+            };
+
+            ws.onclose = () => {
+                document.getElementById('ws-dot').classList.remove('connected');
+                document.getElementById('ws-status-text').textContent = '已断开，重连中...';
+                document.getElementById('ws-status-text').style.color = 'var(--error)';
+                // 自动重连
+                wsRetryTimer = setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = () => ws.close();
+        }
+
+        function appendLog(log) {
+            const panel = document.getElementById('log-panel');
+            const line = document.createElement('div');
+            line.className = `log-line log-level-${log.level}`;
+            line.innerHTML = `<span class="log-time">${log.timestamp}</span> <span class="log-name">[${log.name}]</span> <span class="log-msg">${escapeHtml(log.message)}</span>`;
+            panel.appendChild(line);
+
+            // 保持最多 500 行
+            while (panel.children.length > 500) {
+                panel.removeChild(panel.firstChild);
+            }
+
+            // 自动滚动到底部
+            panel.scrollTop = panel.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function clearLogs() {
+            document.getElementById('log-panel').innerHTML = '';
+        }
+
         // ========== 初始化 ==========
-        document.addEventListener('DOMContentLoaded', loadConfig);
+        document.addEventListener('DOMContentLoaded', () => {
+            loadConfig();
+            connectWebSocket();
+        });
     </script>
 </body>
 </html>

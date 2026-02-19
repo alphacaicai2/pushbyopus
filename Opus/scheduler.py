@@ -27,6 +27,7 @@ class PollScheduler:
         self.poll_interval = config.get("poll_interval_minutes", 15) * 60  # 转为秒
         self.routes: dict[str, str] = config.get("routes", {})
         self._stop_event = threading.Event()
+        self._reload_event = threading.Event()  # 用于中断 wait 以应用新间隔
         self._last_poll_time: float | None = None  # 上次轮询时间（Unix 时间戳）
 
         # 初始化各组件
@@ -188,7 +189,14 @@ class PollScheduler:
 
         # 主轮询循环
         while not self._stop_event.is_set():
-            self._stop_event.wait(self.poll_interval)
+            # 等待轮询间隔，每秒检查一次 stop/reload 信号
+            self._reload_event.clear()
+            waited = 0
+            while waited < self.poll_interval:
+                if self._stop_event.is_set() or self._reload_event.is_set():
+                    break
+                time.sleep(1)
+                waited += 1
             if self._stop_event.is_set():
                 break
             try:
@@ -230,3 +238,54 @@ class PollScheduler:
         self.miniflux.close()
         if self.translator:
             self.translator.close()
+
+    def reload(self, new_config: dict):
+        """
+        热重载配置（不中断轮询循环）
+
+        支持更新：路由表、轮询间隔、翻译器配置
+        """
+        logger.info("🔄 正在热重载配置...")
+
+        # 更新路由表
+        old_routes = len(self.routes)
+        self.routes = new_config.get("routes", {})
+        logger.info(f"   路由: {old_routes} → {len(self.routes)} 条")
+
+        # 更新轮询间隔
+        old_interval = self.poll_interval
+        self.poll_interval = new_config.get("poll_interval_minutes", 15) * 60
+        if old_interval != self.poll_interval:
+            logger.info(f"   轮询间隔: {old_interval // 60} → {self.poll_interval // 60} 分钟")
+            # 唤醒轮询循环以使用新间隔（不会触发停止）
+            self._reload_event.set()
+
+        # 更新翻译器
+        translation_cfg = new_config.get("translation", {})
+        if translation_cfg.get("base_url") and translation_cfg.get("api_key"):
+            if self.translator:
+                self.translator.close()
+            self.translator = Translator(
+                base_url=translation_cfg.get("base_url", ""),
+                api_key=translation_cfg.get("api_key", ""),
+                model=translation_cfg.get("model", "gpt-4o-mini"),
+            )
+            logger.info(f"   翻译器: 已更新 (模型: {translation_cfg.get('model', 'gpt-4o-mini')})")
+        elif not translation_cfg.get("base_url"):
+            if self.translator:
+                self.translator.close()
+                self.translator = None
+            logger.info("   翻译器: 已禁用")
+
+        # 更新 Miniflux 客户端（如果 URL/Token 变了）
+        if (new_config.get("miniflux_url") != self.config.get("miniflux_url") or
+                new_config.get("miniflux_token") != self.config.get("miniflux_token")):
+            self.miniflux.close()
+            self.miniflux = MinifluxClient(
+                base_url=new_config["miniflux_url"],
+                api_token=new_config["miniflux_token"],
+            )
+            logger.info("   Miniflux 客户端: 已重新连接")
+
+        self.config = new_config
+        logger.info("✅ 配置热重载完成！")

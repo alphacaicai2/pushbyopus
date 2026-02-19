@@ -4,12 +4,13 @@ Opus Relay - 主入口
 Miniflux RSS → Opus Relay → Discord 推送
 
 用法：
-    uv run python main.py                  # 启动轮询服务
-    uv run python main.py web              # 启动配置管理 UI
-    uv run python main.py test-translation  # 测试翻译 API
-    uv run python main.py test-miniflux     # 测试 Miniflux 连接
-    uv run python main.py poll-once         # 执行一次轮询
-    uv run python main.py list-feeds        # 列出所有 Feed
+    uv run python main.py                  # 启动 Web UI + 轮询服务
+    uv run python main.py web              # 仅启动 Web UI（不轮询）
+    uv run python main.py poll-only        # 仅轮询（无 Web UI）
+    uv run python main.py poll-once        # 执行一次轮询
+    uv run python main.py test-translation # 测试翻译 API
+    uv run python main.py test-miniflux    # 测试 Miniflux 连接
+    uv run python main.py list-feeds       # 列出所有 Feed
 """
 
 import sys
@@ -51,12 +52,16 @@ def load_config() -> dict:
 
 
 def cmd_start(config: dict):
-    """启动轮询服务"""
+    """启动 Web UI + 轮询服务（默认模式）"""
+    import threading
+    import uvicorn
     from database import init_db
     from scheduler import PollScheduler
+    from web_server import set_scheduler
 
     init_db()
     scheduler = PollScheduler(config)
+    set_scheduler(scheduler)  # 注入到 web_server 供热重载使用
 
     # 优雅停机
     def handle_signal(sig, frame):
@@ -66,11 +71,41 @@ def cmd_start(config: dict):
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
+    port = 8090
     print("🚀 Opus Relay 启动中...")
     print(f"   Miniflux: {config['miniflux_url']}")
     print(f"   轮询间隔: {config.get('poll_interval_minutes', 15)} 分钟")
     print(f"   路由数量: {len(config.get('routes', {}))}")
     print(f"   翻译: {'✅ 已配置' if config.get('translation', {}).get('base_url') else '❌ 未配置'}")
+    print(f"   Web UI: http://localhost:{port}")
+    print()
+
+    # 轮询在后台线程运行
+    poll_thread = threading.Thread(target=scheduler.run, daemon=True)
+    poll_thread.start()
+
+    # Web UI 在主线程运行（uvicorn）
+    uvicorn.run("web_server:app", host="0.0.0.0", port=port, log_level="warning")
+
+
+def cmd_poll_only(config: dict):
+    """仅启动轮询服务（无 Web UI）"""
+    from database import init_db
+    from scheduler import PollScheduler
+
+    init_db()
+    scheduler = PollScheduler(config)
+
+    def handle_signal(sig, frame):
+        scheduler.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
+    print("🚀 Opus Relay 启动中（仅轮询）...")
+    print(f"   Miniflux: {config['miniflux_url']}")
+    print(f"   轮询间隔: {config.get('poll_interval_minutes', 15)} 分钟")
     print()
 
     scheduler.run()
@@ -182,6 +217,7 @@ def main():
 
     commands = {
         "start": cmd_start,
+        "poll-only": cmd_poll_only,
         "test-translation": cmd_test_translation,
         "test-miniflux": cmd_test_miniflux,
         "poll-once": cmd_poll_once,
@@ -193,8 +229,9 @@ def main():
     else:
         print(f"❌ 未知命令: {command}")
         print(f"\n可用命令：")
-        print(f"  start            启动轮询服务（默认）")
-        print(f"  web              启动配置管理 UI")
+        print(f"  start            启动 Web UI + 轮询服务（默认）")
+        print(f"  web              仅启动 Web UI")
+        print(f"  poll-only        仅轮询（无 Web UI）")
         print(f"  test-translation 测试翻译 API")
         print(f"  test-miniflux    测试 Miniflux 连接")
         print(f"  poll-once        执行一次轮询")
