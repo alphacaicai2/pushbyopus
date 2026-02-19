@@ -1,0 +1,232 @@
+"""
+Opus Relay - 轮询调度器
+
+负责：
+- 定时轮询 Miniflux 获取新条目
+- 处理去重、翻译、路由、入队
+- 定时刷新聚合队列
+- 定时清理过期数据
+"""
+
+import time
+import logging
+import threading
+from miniflux_client import MinifluxClient
+from discord_sender import DiscordSender
+from translator import Translator
+from database import is_entry_exists, is_url_exists_in_category, save_entry, cleanup_expired
+
+logger = logging.getLogger("opus.scheduler")
+
+
+class PollScheduler:
+    """轮询调度器"""
+
+    def __init__(self, config: dict):
+        self.config = config
+        self.poll_interval = config.get("poll_interval_minutes", 15) * 60  # 转为秒
+        self.routes: dict[str, str] = config.get("routes", {})
+        self._stop_event = threading.Event()
+        self._last_poll_time: float | None = None  # 上次轮询时间（Unix 时间戳）
+
+        # 初始化各组件
+        self.miniflux = MinifluxClient(
+            base_url=config["miniflux_url"],
+            api_token=config["miniflux_token"],
+        )
+
+        translation_cfg = config.get("translation", {})
+        self.translator = Translator(
+            base_url=translation_cfg.get("base_url", ""),
+            api_key=translation_cfg.get("api_key", ""),
+            model=translation_cfg.get("model", "gpt-4o-mini"),
+        ) if translation_cfg.get("base_url") and translation_cfg.get("api_key") else None
+
+        self.discord = DiscordSender(
+            batch_interval=config.get("batch_interval_seconds", 120),
+            batch_max=config.get("batch_max_items", 15),
+        )
+
+    def poll_once(self) -> int:
+        """
+        执行一次轮询
+
+        只拉取时间窗口内的新文章：
+        - 首次运行：拉取最近一个轮询间隔内的文章
+        - 后续运行：拉取上次轮询以来的新文章
+
+        返回本次新推送的条目数
+        """
+        now = time.time()
+
+        # 计算时间窗口起点
+        if self._last_poll_time is None:
+            # 首次运行，只拉取最近一个轮询间隔内的文章
+            published_after = int(now - self.poll_interval)
+            logger.info(
+                f"首次轮询，拉取最近 {self.poll_interval // 60} 分钟内的文章..."
+            )
+        else:
+            # 后续运行，拉取上次轮询以来的文章
+            published_after = int(self._last_poll_time)
+            logger.info("开始轮询 Miniflux（增量拉取）...")
+
+        entries = self.miniflux.get_unread_entries(
+            limit=100, published_after=published_after
+        )
+
+        # 更新轮询时间（放在拉取之后，确保不会遗漏）
+        self._last_poll_time = now
+
+        if not entries:
+            logger.info("没有新条目")
+            return 0
+
+        new_count = 0
+
+        for entry in entries:
+            entry_id = entry["id"]
+            feed_id = str(entry.get("feed_id", ""))
+            category_id = str(entry.get("feed", {}).get("category", {}).get("id", ""))
+
+            # entry_id 去重
+            if is_entry_exists(entry_id):
+                continue
+
+            # 分组内 URL 去重：同一分组内相同 URL 只推一次
+            url = entry.get("url", "")
+            cat_id_int = int(category_id) if category_id.isdigit() else 0
+            if url and is_url_exists_in_category(url, cat_id_int):
+                logger.debug(f"分组内重复跳过: category={category_id} url={url[:60]}")
+                # 仍然记录 entry_id 避免下次重复检查
+                save_entry(
+                    entry_id=entry_id,
+                    feed_id=int(feed_id) if feed_id.isdigit() else 0,
+                    category_id=cat_id_int,
+                    title=entry.get("title", ""),
+                    title_zh="",
+                    url=url,
+                    published=entry.get("published_at", ""),
+                )
+                continue
+
+            # 查找路由：feed_id > category_id > * 通配
+            webhook_url = (
+                self.routes.get(f"feed:{feed_id}")
+                or self.routes.get(category_id)
+                or self.routes.get("*")
+            )
+            if not webhook_url:
+                logger.debug(f"category_id={category_id} feed_id={feed_id} 未配置路由，跳过")
+                continue
+
+            title = entry.get("title", "无标题")
+            published = entry.get("published_at", "")
+            feed_name = entry.get("feed", {}).get("title", "未知来源")
+
+            # 翻译标题
+            title_zh = title
+            if self.translator:
+                try:
+                    title_zh = self.translator.translate_title(title)
+                except Exception as e:
+                    logger.error(f"翻译失败，使用原标题: {e}")
+
+            # 保存到数据库（去重 + 日报预留）
+            save_entry(
+                entry_id=entry_id,
+                feed_id=int(feed_id) if feed_id.isdigit() else 0,
+                category_id=cat_id_int,
+                title=title,
+                title_zh=title_zh,
+                url=url,
+                published=published,
+            )
+
+            # 加入 Discord 发送队列
+            self.discord.enqueue(webhook_url, {
+                "title": title,
+                "title_zh": title_zh,
+                "url": url,
+                "feed_name": feed_name,
+                "published": published,
+            })
+
+            new_count += 1
+
+        # 强制刷新所有队列（确保本次轮询的消息发出）
+        self.discord.flush()
+
+        logger.info(f"本次轮询完成：{new_count} 条新条目已推送")
+        return new_count
+
+    def run(self):
+        """启动轮询循环"""
+        logger.info(
+            f"Opus Relay 启动！"
+            f"轮询间隔: {self.poll_interval // 60} 分钟，"
+            f"已配置 {len(self.routes)} 条路由"
+        )
+
+        # 启动时立即执行一次
+        try:
+            self.poll_once()
+        except Exception as e:
+            logger.error(f"首次轮询出错: {e}")
+
+        # 启动聚合队列刷新线程
+        flush_thread = threading.Thread(
+            target=self._flush_loop, daemon=True
+        )
+        flush_thread.start()
+
+        # 启动清理线程
+        cleanup_thread = threading.Thread(
+            target=self._cleanup_loop, daemon=True
+        )
+        cleanup_thread.start()
+
+        # 主轮询循环
+        while not self._stop_event.is_set():
+            self._stop_event.wait(self.poll_interval)
+            if self._stop_event.is_set():
+                break
+            try:
+                self.poll_once()
+            except Exception as e:
+                logger.error(f"轮询出错: {e}", exc_info=True)
+
+    def _flush_loop(self):
+        """定期刷新聚合队列"""
+        while not self._stop_event.is_set():
+            time.sleep(30)  # 每30秒检查一次
+            try:
+                self.discord.flush_expired()
+            except Exception as e:
+                logger.error(f"刷新队列出错: {e}")
+
+    def _cleanup_loop(self):
+        """定期清理过期数据（每6小时）"""
+        while not self._stop_event.is_set():
+            self._stop_event.wait(6 * 3600)  # 6小时
+            if self._stop_event.is_set():
+                break
+            try:
+                deleted_entries, deleted_cache = cleanup_expired()
+                if deleted_entries or deleted_cache:
+                    logger.info(
+                        f"清理完成: {deleted_entries} 条过期条目, "
+                        f"{deleted_cache} 条过期翻译缓存"
+                    )
+            except Exception as e:
+                logger.error(f"清理出错: {e}")
+
+    def stop(self):
+        """停止调度器"""
+        logger.info("正在停止 Opus Relay...")
+        self._stop_event.set()
+        self.discord.flush()  # 发送剩余队列
+        self.discord.close()
+        self.miniflux.close()
+        if self.translator:
+            self.translator.close()
