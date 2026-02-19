@@ -512,6 +512,11 @@
                             <option value="Australia/Sydney">Australia/Sydney (悉尼时间)</option>
                         </select>
                     </div>
+                    <div class="form-group">
+                        <label class="form-label">正文摘要长度（字符数）</label>
+                        <input type="number" id="content_summary_length" min="100" max="2000" value="300" style="max-width: 150px;">
+                        <span style="font-size: 12px; color: var(--text-muted); margin-left: 8px;">勾选「获取正文」的文章将截取此长度</span>
+                    </div>
                 </div>
             </div>
 
@@ -634,6 +639,7 @@
                 document.getElementById('batch_interval').value = config.batch_interval_seconds || 120;
                 document.getElementById('batch_max').value = config.batch_max_items || 15;
                 document.getElementById('timezone').value = config.timezone || 'UTC';
+                document.getElementById('content_summary_length').value = config.content_summary_length || 300;
 
                 currentRoutes = config.routes || {};
 
@@ -657,6 +663,9 @@
                 // 从路由表格收集当前值
                 collectRoutes();
 
+                // 收集启用 Content 的分组
+                const categoriesWithContent = collectCategoriesWithContent();
+
                 const config = {
                     miniflux_url: document.getElementById('miniflux_url').value.trim(),
                     miniflux_token: document.getElementById('miniflux_token').value.trim(),
@@ -664,6 +673,8 @@
                     batch_interval_seconds: parseInt(document.getElementById('batch_interval').value) || 120,
                     batch_max_items: parseInt(document.getElementById('batch_max').value) || 15,
                     timezone: document.getElementById('timezone').value,
+                    content_summary_length: parseInt(document.getElementById('content_summary_length').value) || 300,
+                    categories_with_content: categoriesWithContent,
                     translation: {
                         base_url: document.getElementById('translation_base_url').value.trim(),
                         api_key: document.getElementById('translation_api_key').value.trim(),
@@ -738,9 +749,10 @@
                 <table class="route-table">
                     <thead>
                         <tr>
-                            <th style="width: 180px;">分组</th>
+                            <th style="width: 160px;">分组</th>
+                            <th style="width: 80px;">获取正文</th>
                             <th>Webhook URL</th>
-                            <th style="width: 70px;">操作</th>
+                            <th style="width: 50px;">操作</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -748,11 +760,19 @@
 
             for (const cat of categories) {
                 const webhookUrl = currentRoutes[cat.id] || '';
+                const contentEnabled = cat.content_enabled || false;
                 html += `
                     <tr class="route-row">
                         <td class="route-cat">
                             ${cat.name}
                             <div class="route-cat-id">ID: ${cat.id} · ${cat.feeds.length} 个 Feed</div>
+                        </td>
+                        <td style="text-align: center;">
+                            <input type="checkbox"
+                                id="content-${cat.id}"
+                                ${contentEnabled ? 'checked' : ''}
+                                onchange="toggleContent('${cat.id}', this.checked)"
+                                style="width: 18px; height: 18px; cursor: pointer;">
                         </td>
                         <td>
                             <div class="route-input-wrap">
@@ -788,6 +808,19 @@
             });
         }
 
+        // ========== 收集启用 Content 的分组 ==========
+        function collectCategoriesWithContent() {
+            const enabled = [];
+            const checkboxes = document.querySelectorAll('input[type="checkbox"][id^="content-"]');
+            checkboxes.forEach(cb => {
+                if (cb.checked) {
+                    const catId = cb.id.replace('content-', '');
+                    enabled.push(catId);
+                }
+            });
+            return enabled;
+        }
+
         // ========== 测试 Webhook ==========
         async function testWebhook(catId) {
             const input = document.getElementById(`route-${catId}`);
@@ -802,6 +835,20 @@
                 showToast(result.message, result.success ? 'success' : 'error');
             } catch (e) {
                 showToast('测试失败: ' + e.message, 'error');
+            }
+        }
+
+        // ========== 切换分组 Content 配置 ==========
+        async function toggleContent(catId, enabled) {
+            try {
+                const result = await api('PUT', `/api/categories/${catId}/content`, { enabled });
+                if (result.success) {
+                    showToast(enabled ? '已启用正文获取' : '已关闭正文获取', 'success');
+                }
+            } catch (e) {
+                // 恢复勾选状态
+                document.getElementById(`content-${catId}`).checked = !enabled;
+                showToast('设置失败: ' + e.message, 'error');
             }
         }
 

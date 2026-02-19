@@ -11,6 +11,7 @@ import httpx
 import time
 import logging
 import threading
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from collections import defaultdict
@@ -21,15 +22,18 @@ logger = logging.getLogger("opus.discord")
 class DiscordSender:
     """Discord Webhook 发送器，支持批量聚合和速率限制"""
 
-    def __init__(self, batch_interval: int = 120, batch_max: int = 15, timezone: str = "UTC"):
+    def __init__(self, batch_interval: int = 120, batch_max: int = 15,
+                 timezone: str = "UTC", content_summary_length: int = 300):
         """
         Args:
             batch_interval: 聚合间隔（秒），达到此时间强制发送
             batch_max: 聚合上限（条），达到此数量立即发送
             timezone: 用户时区（如 "Asia/Shanghai", "America/New_York"）
+            content_summary_length: 正文摘要长度（字符数）
         """
         self.batch_interval = batch_interval
         self.batch_max = batch_max
+        self.content_summary_length = content_summary_length
         self.client = httpx.Client(timeout=30.0)
 
         # 设置用户时区
@@ -76,6 +80,35 @@ class DiscordSender:
             logger.debug(f"解析时间失败: {published_str}, {e}")
             return ("", False)
 
+    def _truncate_content(self, content: str, max_length: int = None) -> str:
+        """
+        截取正文摘要，清理 HTML 标签
+
+        Args:
+            content: 原始内容（可能包含 HTML）
+            max_length: 最大长度，默认使用 content_summary_length
+
+        Returns:
+            清理并截断后的纯文本摘要
+        """
+        if not content:
+            return ""
+
+        if max_length is None:
+            max_length = self.content_summary_length
+
+        # 移除 HTML 标签
+        text = re.sub(r'<[^>]+>', '', content)
+
+        # 移除多余空白
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        # 截断
+        if len(text) > max_length:
+            text = text[:max_length].rstrip() + "..."
+
+        return text
+
     def enqueue(self, webhook_url: str, item: dict):
         """
         将一条消息加入待发队列
@@ -86,7 +119,8 @@ class DiscordSender:
             "title_zh": "中文标题",
             "url": "链接",
             "feed_name": "来源名称",
-            "published": "发布时间"
+            "published": "发布时间",
+            "content": "文章正文（可选）"
         }
         """
         with self._lock:
@@ -135,16 +169,23 @@ class DiscordSender:
             url = item.get("url", "")
             feed_name = item.get("feed_name", "")
             published = item.get("published", "")
+            content = item.get("content", "")
 
             # 格式化发布时间
             time_str, has_time = self._format_published_time(published)
             time_display = f"🕐 {time_str}" if has_time else "🕐 原始文章没发布时间"
 
-            # 显示格式：中文标题（有的话）+ 原标题 + 链接 + 时间
+            # 显示格式：中文标题（有的话）+ 原标题 + 链接 + 时间 + 正文摘要
             if title_zh and title_zh != title:
                 line = f"**{i}.** [{title_zh}]({url})\n　　_{title}_ | {feed_name} | {time_display}"
             else:
                 line = f"**{i}.** [{title}]({url})\n　　{feed_name} | {time_display}"
+
+            # 添加正文摘要（如果有）
+            if content:
+                summary = self._truncate_content(content)
+                if summary:
+                    line += f"\n　　📝 {summary}"
 
             description_lines.append(line)
 
@@ -182,6 +223,7 @@ class DiscordSender:
                 url = item.get("url", "")
                 feed_name = item.get("feed_name", "")
                 published = item.get("published", "")
+                content = item.get("content", "")
 
                 # 格式化发布时间
                 time_str, has_time = self._format_published_time(published)
@@ -191,6 +233,13 @@ class DiscordSender:
                     line = f"**{j}.** [{title_zh}]({url})\n　　_{title}_ | {feed_name} | {time_display}"
                 else:
                     line = f"**{j}.** [{title}]({url})\n　　{feed_name} | {time_display}"
+
+                # 添加正文摘要（如果有）
+                if content:
+                    summary = self._truncate_content(content)
+                    if summary:
+                        line += f"\n　　📝 {summary}"
+
                 description_lines.append(line)
 
             payload = {

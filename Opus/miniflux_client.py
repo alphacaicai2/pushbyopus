@@ -87,6 +87,25 @@ class MinifluxClient:
             logger.error(f"获取分组列表失败: {e}")
             return []
 
+    def get_entry_content(self, entry_id: int) -> str:
+        """
+        获取单条文章的完整内容
+
+        Args:
+            entry_id: 文章 ID
+
+        Returns:
+            文章内容（HTML 格式），失败返回空字符串
+        """
+        try:
+            resp = self.client.get(f"/v1/entries/{entry_id}")
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("content", "")
+        except httpx.HTTPError as e:
+            logger.error(f"获取文章内容失败 (entry_id={entry_id}): {e}")
+            return ""
+
     def mark_as_read(self, entry_ids: list[int]):
         """将条目标记为已读"""
         if not entry_ids:

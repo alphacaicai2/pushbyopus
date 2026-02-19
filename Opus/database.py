@@ -54,6 +54,7 @@ def init_db():
                 title_zh    TEXT,
                 url         TEXT,
                 published   TEXT,
+                content     TEXT,
                 pushed_at   TEXT DEFAULT (datetime('now')),
                 expires_at  TEXT
             )
@@ -64,6 +65,12 @@ def init_db():
             conn.execute("SELECT category_id FROM entries LIMIT 1")
         except sqlite3.OperationalError:
             conn.execute("ALTER TABLE entries ADD COLUMN category_id INTEGER")
+
+        # 兼容旧表：如果 content 列不存在则添加
+        try:
+            conn.execute("SELECT content FROM entries LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE entries ADD COLUMN content TEXT")
 
         # 翻译缓存表
         conn.execute("""
@@ -121,15 +128,16 @@ def is_url_exists_in_category(url: str, category_id: int) -> bool:
 
 
 def save_entry(entry_id: int, feed_id: int, category_id: int,
-               title: str, title_zh: str, url: str, published: str):
+               title: str, title_zh: str, url: str, published: str,
+               content: str = ""):
     """保存文章索引"""
     expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
     with get_conn() as conn:
         conn.execute("""
             INSERT OR IGNORE INTO entries
-            (entry_id, feed_id, category_id, title, title_zh, url, published, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (entry_id, feed_id, category_id, title, title_zh, url, published, expires_at))
+            (entry_id, feed_id, category_id, title, title_zh, url, published, content, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (entry_id, feed_id, category_id, title, title_zh, url, published, content, expires_at))
 
 
 def get_cached_translation(original: str) -> str | None:

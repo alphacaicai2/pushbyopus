@@ -5,6 +5,8 @@
   "batch_interval_seconds": 120,
   "batch_max_items": 15,
   "timezone": "Asia/Shanghai",
+  "content_summary_length": 300,
+  "categories_with_content": [],
   "translation": {
     "base_url": "https://api.openai.com/v1",
     "api_key": "sk-xxx",

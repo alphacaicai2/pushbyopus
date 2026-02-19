@@ -159,6 +159,8 @@ class AppConfig(BaseModel):
     batch_interval_seconds: int = 120
     batch_max_items: int = 15
     timezone: str = "UTC"
+    content_summary_length: int = 300
+    categories_with_content: list[str] = []
     translation: TranslationConfig = TranslationConfig()
     routes: dict[str, str] = {}
 
@@ -176,6 +178,10 @@ class TestTranslationRequest(BaseModel):
 
 class TestWebhookRequest(BaseModel):
     webhook_url: str
+
+
+class CategoryContentRequest(BaseModel):
+    enabled: bool
 
 
 # ========== WebSocket 端点 ==========
@@ -334,6 +340,7 @@ async def get_feeds():
 
     url = config.get("miniflux_url", "").rstrip("/")
     token = config.get("miniflux_token", "")
+    categories_with_content = set(config.get("categories_with_content", []))
 
     if not url or not token:
         raise HTTPException(status_code=400, detail="Miniflux URL 或 Token 未配置")
@@ -359,6 +366,7 @@ async def get_feeds():
                         "id": cat_id,
                         "name": cat_name,
                         "feeds": [],
+                        "content_enabled": cat_id in categories_with_content,
                     }
                 categories[cat_id]["feeds"].append({
                     "id": feed.get("id"),
@@ -370,6 +378,43 @@ async def get_feeds():
 
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"获取 Feed 列表失败: {e}")
+
+
+# ========== 分组 Content 配置 API ==========
+
+@app.put("/api/categories/{category_id}/content")
+async def update_category_content(category_id: str, req: CategoryContentRequest):
+    """更新分组的 content 获取配置"""
+    if not os.path.exists(CONFIG_PATH):
+        raise HTTPException(status_code=400, detail="配置文件不存在")
+
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+        categories_with_content = set(config.get("categories_with_content", []))
+
+        if req.enabled:
+            categories_with_content.add(category_id)
+        else:
+            categories_with_content.discard(category_id)
+
+        config["categories_with_content"] = list(categories_with_content)
+
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+
+        # 热重载
+        if _scheduler is not None:
+            try:
+                _scheduler.reload(config)
+            except Exception as e:
+                logger.error(f"热重载失败: {e}")
+
+        return {"success": True, "enabled": req.enabled}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新配置失败: {e}")
 
 
 # ========== 静态文件 & 首页 ==========

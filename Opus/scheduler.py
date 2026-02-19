@@ -26,6 +26,8 @@ class PollScheduler:
         self.config = config
         self.poll_interval = config.get("poll_interval_minutes", 15) * 60  # 转为秒
         self.routes: dict[str, str] = config.get("routes", {})
+        self.categories_with_content: set[str] = set(config.get("categories_with_content", []))
+        self.content_summary_length = config.get("content_summary_length", 300)
         self._stop_event = threading.Event()
         self._reload_event = threading.Event()  # 用于中断 wait 以应用新间隔
 
@@ -51,6 +53,7 @@ class PollScheduler:
             batch_interval=config.get("batch_interval_seconds", 120),
             batch_max=config.get("batch_max_items", 15),
             timezone=config.get("timezone", "UTC"),
+            content_summary_length=self.content_summary_length,
         )
 
     def poll_once(self) -> int:
@@ -137,6 +140,15 @@ class PollScheduler:
                 except Exception as e:
                     logger.error(f"翻译失败，使用原标题: {e}")
 
+            # 根据 categories_with_content 决定是否获取 content
+            content = ""
+            if category_id in self.categories_with_content:
+                try:
+                    content = self.miniflux.get_entry_content(entry_id)
+                    logger.debug(f"获取文章内容: entry_id={entry_id}, length={len(content)}")
+                except Exception as e:
+                    logger.warning(f"获取文章内容失败: entry_id={entry_id}, {e}")
+
             # 保存到数据库（去重 + 日报预留）
             save_entry(
                 entry_id=entry_id,
@@ -146,6 +158,7 @@ class PollScheduler:
                 title_zh=title_zh,
                 url=url,
                 published=published,
+                content=content,
             )
 
             # 加入 Discord 发送队列
@@ -155,6 +168,7 @@ class PollScheduler:
                 "url": url,
                 "feed_name": feed_name,
                 "published": published,
+                "content": content,
             })
 
             new_count += 1
@@ -301,6 +315,19 @@ class PollScheduler:
                 logger.info(f"   时区: {old_tz} → {new_tz}")
             except Exception as e:
                 logger.warning(f"   时区更新失败: {e}")
+
+        # 更新 categories_with_content
+        old_categories = len(self.categories_with_content)
+        self.categories_with_content = set(new_config.get("categories_with_content", []))
+        if old_categories != len(self.categories_with_content):
+            logger.info(f"   获取正文的分组: {old_categories} → {len(self.categories_with_content)} 个")
+
+        # 更新 content_summary_length
+        old_length = self.content_summary_length
+        self.content_summary_length = new_config.get("content_summary_length", 300)
+        self.discord.content_summary_length = self.content_summary_length
+        if old_length != self.content_summary_length:
+            logger.info(f"   摘要长度: {old_length} → {self.content_summary_length}")
 
         self.config = new_config
         logger.info("✅ 配置热重载完成！")
