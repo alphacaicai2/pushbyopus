@@ -158,6 +158,7 @@ class AppConfig(BaseModel):
     poll_interval_minutes: int = 5
     batch_interval_seconds: int = 120
     batch_max_items: int = 15
+    timezone: str = "UTC"
     translation: TranslationConfig = TranslationConfig()
     routes: dict[str, str] = {}
 

@@ -14,7 +14,7 @@ import threading
 from miniflux_client import MinifluxClient
 from discord_sender import DiscordSender
 from translator import Translator
-from database import is_entry_exists, is_url_exists_in_category, save_entry, cleanup_expired
+from database import is_entry_exists, is_url_exists_in_category, save_entry, cleanup_expired, save_last_poll_time, get_last_poll_time
 
 logger = logging.getLogger("opus.scheduler")
 
@@ -28,7 +28,11 @@ class PollScheduler:
         self.routes: dict[str, str] = config.get("routes", {})
         self._stop_event = threading.Event()
         self._reload_event = threading.Event()  # 用于中断 wait 以应用新间隔
-        self._last_poll_time: float | None = None  # 上次轮询时间（Unix 时间戳）
+
+        # 从数据库恢复上次轮询时间（服务重启后不丢失）
+        self._last_poll_time: float | None = get_last_poll_time()
+        if self._last_poll_time:
+            logger.info(f"从数据库恢复上次轮询时间: {self._last_poll_time}")
 
         # 初始化各组件
         self.miniflux = MinifluxClient(
@@ -46,38 +50,38 @@ class PollScheduler:
         self.discord = DiscordSender(
             batch_interval=config.get("batch_interval_seconds", 120),
             batch_max=config.get("batch_max_items", 15),
+            timezone=config.get("timezone", "UTC"),
         )
 
     def poll_once(self) -> int:
         """
         执行一次轮询
 
-        只拉取时间窗口内的新文章：
-        - 首次运行：拉取最近一个轮询间隔内的文章
-        - 后续运行：拉取上次轮询以来的新文章
+        只拉取时间窗口内的新文章（按 Miniflux 抓取时间过滤）：
+        - 首次运行：拉取最近 2 小时内被抓取的文章
+        - 后续运行：拉取上次轮询以来被抓取的文章
 
         返回本次新推送的条目数
         """
         now = time.time()
 
-        # 计算时间窗口起点
+        # 计算时间窗口起点（按 changed_at 过滤，而非 published_at）
         if self._last_poll_time is None:
-            # 首次运行，只拉取最近一个轮询间隔内的文章
-            published_after = int(now - self.poll_interval)
-            logger.info(
-                f"首次轮询，拉取最近 {self.poll_interval // 60} 分钟内的文章..."
-            )
+            # 首次运行，拉取最近 2 小时内被抓取的文章
+            changed_after = int(now - 2 * 3600)  # 2 小时
+            logger.info("首次轮询，拉取最近 2 小时内被抓取的文章...")
         else:
-            # 后续运行，拉取上次轮询以来的文章
-            published_after = int(self._last_poll_time)
+            # 后续运行，拉取上次轮询以来被抓取的文章
+            changed_after = int(self._last_poll_time)
             logger.info("开始轮询 Miniflux（增量拉取）...")
 
         entries = self.miniflux.get_unread_entries(
-            limit=100, published_after=published_after
+            limit=100, changed_after=changed_after
         )
 
-        # 更新轮询时间（放在拉取之后，确保不会遗漏）
+        # 更新轮询时间并持久化（放在拉取之后，确保不会遗漏）
         self._last_poll_time = now
+        save_last_poll_time(now)
 
         if not entries:
             logger.info("没有新条目")
@@ -286,6 +290,17 @@ class PollScheduler:
                 api_token=new_config["miniflux_token"],
             )
             logger.info("   Miniflux 客户端: 已重新连接")
+
+        # 更新时区（如果变了）
+        old_tz = self.config.get("timezone", "UTC")
+        new_tz = new_config.get("timezone", "UTC")
+        if old_tz != new_tz:
+            from zoneinfo import ZoneInfo
+            try:
+                self.discord.user_tz = ZoneInfo(new_tz)
+                logger.info(f"   时区: {old_tz} → {new_tz}")
+            except Exception as e:
+                logger.warning(f"   时区更新失败: {e}")
 
         self.config = new_config
         logger.info("✅ 配置热重载完成！")

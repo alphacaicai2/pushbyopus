@@ -11,7 +11,8 @@ import httpx
 import time
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from collections import defaultdict
 
 logger = logging.getLogger("opus.discord")
@@ -20,21 +21,60 @@ logger = logging.getLogger("opus.discord")
 class DiscordSender:
     """Discord Webhook 发送器，支持批量聚合和速率限制"""
 
-    def __init__(self, batch_interval: int = 120, batch_max: int = 15):
+    def __init__(self, batch_interval: int = 120, batch_max: int = 15, timezone: str = "UTC"):
         """
         Args:
             batch_interval: 聚合间隔（秒），达到此时间强制发送
             batch_max: 聚合上限（条），达到此数量立即发送
+            timezone: 用户时区（如 "Asia/Shanghai", "America/New_York"）
         """
         self.batch_interval = batch_interval
         self.batch_max = batch_max
         self.client = httpx.Client(timeout=30.0)
+
+        # 设置用户时区
+        try:
+            self.user_tz = ZoneInfo(timezone)
+        except Exception:
+            logger.warning(f"无效时区 '{timezone}'，使用 UTC")
+            self.user_tz = timezone.utc
 
         # 按 webhook_url 分组的待发队列
         # { webhook_url: [{"title": ..., "title_zh": ..., "url": ..., "feed_name": ...}] }
         self._queues: dict[str, list[dict]] = defaultdict(list)
         self._queue_timestamps: dict[str, float] = {}  # 每个队列的首条入队时间
         self._lock = threading.Lock()
+
+    def _format_published_time(self, published_str: str) -> tuple[str, bool]:
+        """
+        将 ISO 8601 时间字符串转换为用户时区的友好格式
+
+        Args:
+            published_str: ISO 8601 格式时间（如 "2026-02-19T04:00:00Z"）
+
+        Returns:
+            (格式化的时间字符串, 是否有时间)
+            如 ("02/19 12:00", True) 或 ("", False)
+        """
+        if not published_str:
+            return ("", False)
+
+        try:
+            # 解析 ISO 8601 时间
+            dt = datetime.fromisoformat(published_str.replace("Z", "+00:00"))
+
+            # 确保有 timezone 信息
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+
+            # 转换为用户时区
+            local_dt = dt.astimezone(self.user_tz)
+
+            # 格式化为友好格式
+            return (local_dt.strftime("%m/%d %H:%M"), True)
+        except Exception as e:
+            logger.debug(f"解析时间失败: {published_str}, {e}")
+            return ("", False)
 
     def enqueue(self, webhook_url: str, item: dict):
         """
@@ -94,12 +134,17 @@ class DiscordSender:
             title = item.get("title", "")
             url = item.get("url", "")
             feed_name = item.get("feed_name", "")
+            published = item.get("published", "")
 
-            # 显示格式：中文标题（有的话）+ 原标题 + 链接
+            # 格式化发布时间
+            time_str, has_time = self._format_published_time(published)
+            time_display = f"🕐 {time_str}" if has_time else "🕐 原始文章没发布时间"
+
+            # 显示格式：中文标题（有的话）+ 原标题 + 链接 + 时间
             if title_zh and title_zh != title:
-                line = f"**{i}.** [{title_zh}]({url})\n　　_{title}_ | {feed_name}"
+                line = f"**{i}.** [{title_zh}]({url})\n　　_{title}_ | {feed_name} | {time_display}"
             else:
-                line = f"**{i}.** [{title}]({url})\n　　{feed_name}"
+                line = f"**{i}.** [{title}]({url})\n　　{feed_name} | {time_display}"
 
             description_lines.append(line)
 
@@ -136,11 +181,16 @@ class DiscordSender:
                 title = item.get("title", "")
                 url = item.get("url", "")
                 feed_name = item.get("feed_name", "")
+                published = item.get("published", "")
+
+                # 格式化发布时间
+                time_str, has_time = self._format_published_time(published)
+                time_display = f"🕐 {time_str}" if has_time else "🕐 原始文章没发布时间"
 
                 if title_zh and title_zh != title:
-                    line = f"**{j}.** [{title_zh}]({url})\n　　_{title}_ | {feed_name}"
+                    line = f"**{j}.** [{title_zh}]({url})\n　　_{title}_ | {feed_name} | {time_display}"
                 else:
-                    line = f"**{j}.** [{title}]({url})\n　　{feed_name}"
+                    line = f"**{j}.** [{title}]({url})\n　　{feed_name} | {time_display}"
                 description_lines.append(line)
 
             payload = {

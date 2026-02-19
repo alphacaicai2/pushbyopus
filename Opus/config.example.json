@@ -4,6 +4,7 @@
   "poll_interval_minutes": 15,
   "batch_interval_seconds": 120,
   "batch_max_items": 15,
+  "timezone": "Asia/Shanghai",
   "translation": {
     "base_url": "https://api.openai.com/v1",
     "api_key": "sk-xxx",

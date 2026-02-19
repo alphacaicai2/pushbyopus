@@ -25,13 +25,13 @@ class MinifluxClient:
         )
 
     def get_unread_entries(self, limit: int = 100,
-                           published_after: int | None = None) -> list[dict]:
+                           changed_after: int | None = None) -> list[dict]:
         """
         获取未读条目
 
         Args:
             limit: 最多返回条数
-            published_after: Unix 时间戳，只返回此时间之后发布的条目
+            changed_after: Unix 时间戳，只返回此时间之后被 Miniflux 抓取/更新的条目
 
         返回格式：
         [
@@ -40,7 +40,8 @@ class MinifluxClient:
                 "feed_id": 1,
                 "title": "...",
                 "url": "...",
-                "published_at": "2026-02-19T...",
+                "published_at": "2026-02-19T...",  # 文章原始发布时间（用于显示）
+                "changed_at": "2026-02-19T...",    # Miniflux 抓取时间（用于过滤）
                 "feed": {"title": "...", "category": {"id": 2, ...}},
                 ...
             }
@@ -53,8 +54,8 @@ class MinifluxClient:
                 "order": "published_at",
                 "direction": "desc",
             }
-            if published_after is not None:
-                params["published_after"] = published_after
+            if changed_after is not None:
+                params["changed_after"] = changed_after
 
             resp = self.client.get("/v1/entries", params=params)
             resp.raise_for_status()

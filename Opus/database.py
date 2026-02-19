@@ -74,6 +74,15 @@ def init_db():
             )
         """)
 
+        # 状态存储表（key-value）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS state (
+                key     TEXT PRIMARY KEY,
+                value   TEXT,
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
         # 索引加速查询
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_entries_feed_id
@@ -169,3 +178,26 @@ def get_entries_since(hours: int = 24) -> list[dict]:
             (since,)
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+def save_last_poll_time(timestamp: float):
+    """保存上次轮询时间（Unix 时间戳）"""
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO state (key, value, updated_at)
+            VALUES ('last_poll_time', ?, datetime('now'))
+        """, (str(timestamp),))
+
+
+def get_last_poll_time() -> float | None:
+    """获取上次轮询时间（Unix 时间戳）"""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT value FROM state WHERE key = 'last_poll_time'"
+        ).fetchone()
+        if row:
+            try:
+                return float(row["value"])
+            except ValueError:
+                return None
+        return None
