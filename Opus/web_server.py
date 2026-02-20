@@ -15,6 +15,7 @@ import logging
 import asyncio
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -28,6 +29,15 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 STATIC_DIR = os.path.join(CONFIG_DIR, "static")
 
 app = FastAPI(title="Opus Relay 配置管理", version="1.0")
+
+# 允许跨域与 OPTIONS 预检，避免反向代理后 POST 返回 405
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ========== WebSocket 日志广播 ==========
