@@ -1,0 +1,86 @@
+{
+  "name": "Miniflux Poll with AI Translation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{"field": "minutes", "minutesInterval": 1}]
+        }
+      },
+      "id": "schedule-node",
+      "name": "Every Minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "url": "http://miniflux.vibexcap.com/v1/entries?status=unread&limit=5&order=published_at&direction=desc",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "X-Auth-Token", "value": "493393066a73afd3fc3c67107a3dc7e9a032de7cfb96642bc85d3d3d5ecd8ab3"}]
+        },
+        "options": {}
+      },
+      "id": "fetch-node",
+      "name": "Fetch Unread Entries",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [200, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst entries = data.entries || [];\nreturn entries.map(e => ({ json: e }));"
+      },
+      "id": "split-node",
+      "name": "Split Entries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const e = $input.first().json;\nreturn [{ json: { embeds: [{ title: e.title, url: e.url, description: (e.summary || '').substring(0,300), footer: { text: e.feed?.title || '' } }], allowed_mentions: { parse: [] } } }];"
+      },
+      "id": "build-node",
+      "name": "Build Discord Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 0]
+    },
+    {
+      "parameters": {
+        "amount": 2
+      },
+      "id": "wait-node",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [800, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://discord.com/api/webhooks/1473664217163894937/1a8_0sjRlBkz2GihBUTYkqDuUwkZlWW6B1S2vWJLqmCIDFtbnmphQG2rGzHOS1watPWY",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "discord-node",
+      "name": "Send to Discord",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1000, 0]
+    }
+  ],
+  "connections": {
+    "Every Minute": {"main": [[{"node": "Fetch Unread Entries", "type": "main", "index": 0}]]},
+    "Fetch Unread Entries": {"main": [[{"node": "Split Entries", "type": "main", "index": 0}]]},
+    "Split Entries": {"main": [[{"node": "Build Discord Payload", "type": "main", "index": 0}]]},
+    "Build Discord Payload": {"main": [[{"node": "Wait", "type": "main", "index": 0}]]},
+    "Wait": {"main": [[{"node": "Send to Discord", "type": "main", "index": 0}]]}
+  },
+  "active": false,
+  "settings": {"executionOrder": "v1"}
+}

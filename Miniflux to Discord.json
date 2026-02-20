@@ -1,0 +1,74 @@
+{
+  "name": "Miniflux to Discord",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "miniflux-webhook",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "1d674b0f-6c16-485d-90d5-e2f59601eac9",
+      "name": "Miniflux Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "miniflux-incoming"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nconst entries = body.entries || [];\nconst feed = body.feed || {};\n\nconst results = [];\n\nfor (const entry of entries) {\n  const title = (entry.title || 'Untitled').substring(0, 256);\n  const url = entry.url || '';\n  const publishedAt = entry.published_at || '';\n  const author = entry.author || '';\n  const feedTitle = feed.title || '';\n  \n  let description = entry.summary || '';\n  if (!description && entry.content) {\n    description = entry.content.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();\n  }\n  description = description.substring(0, 400);\n  \n  const discordPayload = {\n    embeds: [{\n      type: 'rich',\n      title: title,\n      url: url,\n      description: description,\n      timestamp: publishedAt,\n      footer: {\n        text: `Feed: ${feedTitle}`.substring(0, 2048)\n      },\n      fields: []\n    }],\n    allowed_mentions: { parse: [] }\n  };\n  \n  if (author) {\n    discordPayload.embeds[0].fields.push({\n      name: 'Author',\n      value: author.substring(0, 1024),\n      inline: true\n    });\n  }\n  \n  results.push({ json: discordPayload });\n}\n\nreturn results;"
+      },
+      "id": "a3c75b99-6ff2-4e42-81ce-2488854b9db7",
+      "name": "Transform to Discord Format",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [256, 0]
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "seconds"
+      },
+      "id": "wait-node-123",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [384, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://discord.com/api/webhooks/1473664217163894937/1a8_0sjRlBkz2GihBUTYkqDuUwkZlWW6B1S2vWJLqmCIDFtbnmphQG2rGzHOS1watPWY",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "f7ddfaa2-1651-4947-859a-131c2d5bc7c0",
+      "name": "Send to Discord",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [512, 0]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Miniflux Webhook": {
+      "main": [[{"node": "Transform to Discord Format", "type": "main", "index": 0}]]
+    },
+    "Transform to Discord Format": {
+      "main": [[{"node": "Wait", "type": "main", "index": 0}]]
+    },
+    "Wait": {
+      "main": [[{"node": "Send to Discord", "type": "main", "index": 0}]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "b6d38f10b4abca64e01bee310705a03070df9b4d480bd265a303bcb5555e7540"
+  }
+}
