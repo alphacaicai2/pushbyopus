@@ -312,9 +312,8 @@ async def test_translation(req: TestTranslationRequest):
         return {"success": False, "message": f"翻译测试失败: {e}"}
 
 
-@app.post("/api/test/webhook")
-async def test_webhook(req: TestWebhookRequest):
-    """测试 Discord Webhook（发送一条测试消息）"""
+async def _test_webhook_impl(req: TestWebhookRequest):
+    """测试 Discord Webhook 实现（供带/不带尾部斜杠的路由复用）"""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
@@ -335,6 +334,13 @@ async def test_webhook(req: TestWebhookRequest):
                 return {"success": False, "message": f"发送失败: HTTP {resp.status_code}"}
     except Exception as e:
         return {"success": False, "message": f"Webhook 测试失败: {e}"}
+
+
+@app.post("/api/test/webhook")
+@app.post("/api/test/webhook/")
+async def test_webhook(req: TestWebhookRequest):
+    """测试 Discord Webhook（发送一条测试消息）"""
+    return await _test_webhook_impl(req)
 
 
 # ========== Feed 列表 API ==========
