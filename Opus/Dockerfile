@@ -6,8 +6,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制代码
+# 复制代码与静态资源
 COPY *.py .
+COPY static/ /app/static/
 
 # 数据目录
 RUN mkdir -p /app/data

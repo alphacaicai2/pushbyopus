@@ -1,10 +1,14 @@
+# Opus Relay - 独立栈，不影响已有 Docker 服务
+# 使用: docker compose -p opus up -d
 services:
   opus-relay:
     build: .
     container_name: opus-relay
     restart: always
+    ports:
+      - "8090:8090"   # Web 管理界面，若与现有服务冲突可改为 "18090:8090"
     volumes:
-      - ./config.json:/app/config.json:ro
+      - ./config.json:/app/config.json   # 可写，便于 Web UI 保存配置（含 routes）
       - ./data:/app/data
     environment:
       - TZ=Asia/Shanghai
