@@ -1,4 +1,6 @@
-# 📡 Opus Relay
+# 📡 Opus Relay（历史独立部署）
+
+> 维护迁移：此服务已纳入 [Opussummary/relay](https://github.com/alphacaicai2/Opussummary/tree/main/relay)，与 Smart 共用一份 Compose 和统一登录入口。新部署、更新与修复请使用[统一仓库 README](https://github.com/alphacaicai2/Opussummary#从原来两个-compose-项目迁移)。下文为历史独立部署说明，不适用于当前生产入口；不要与统一部署同时启动。迁移时保留 `config.json`、完整 `data/`，以保留去重记录和轮询进度。
 
 Miniflux RSS → Discord 智能推送服务
 
